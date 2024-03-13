@@ -1,30 +1,410 @@
 ---
-title: "user_report"
+title: "`r params$userid`'s Report"
 author: "HealthyReal"
-date: "2024-03-07"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
 output: html_document
+params:
+  userid: "hmc0110"
+---
+
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+
+
+# 필요한 패키지 로드
+library(rJava)
+library(RJDBC)
+library(dplyr)
+library(dbplyr)
+library(reshape2)
+library(ggplot2)
+library(patchwork)
+library(tidyr)
+library(gridExtra)
+library(plotrix) # pie3D 함수를 사용하기 위해 plotrix 패키지를 로드합니다.
+library(gridGraphics) # as_grob 함수를 사용하기 위해 gridGraphics 패키지를 로드합니다.
+
+#DB 연결 설정
+jdbcDriver <- JDBC(driverClass = "oracle.jdbc.OracleDriver", classPath = "C:/ojdbc8.jar")
+  
+con <- dbConnect(jdbcDriver, "jdbc:oracle:thin:@192.168.0.99:1521/XEPDB1", "TEAM", "TEAM")
+
+# 가입목적
+goal_q <- paste0("select g.goal_name from member m JOIN goal g ON m.goal_no = g.goal_no where m.id = '", params$userid, "'")
+goal <- dbGetQuery(con, goal_q)
 ```
 
-## R Markdown
+<body>
+<div style="text-align:center;">
+#### "<span style="color:red">`r goal`</span>"라는 목적을 가지고 <span style="color:green">HealthyReal</span>를 이용중이신, **`r params$userid`**님의 `r format(as.Date(format(Sys.Date(), "%Y-%m-01")) , "%Y년 %m월")` 보고서는 다음과 같습니다.
+</div>
+---
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+#### 1. 추천을 많이 받았던 음식
+<div style="text-align:center;">
+```{r er_list, echo=FALSE}
+er_list_q <- paste0("select eating_foodname 음식명, mealtype, count(*) as 횟수 from eating_record where id = '",params$userid, "' AND EXTRACT(MONTH FROM eating_date) = EXTRACT(MONTH FROM SYSDATE) group by(eating_foodname, Mealtype) order by 횟수 desc")
+er_list <- dbGetQuery(con, er_list_q)
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+most_frequent_by_mealtype <- er_list %>%
+  group_by(MEALTYPE) %>%
+  top_n(1, 횟수) %>%
+  ungroup()
 
-```{r cars}
-summary(cars)
+most_recommendations <- list(
+  morning = most_frequent_by_mealtype %>% filter(MEALTYPE == "아침"),
+  lunch = most_frequent_by_mealtype %>% filter(MEALTYPE == "점심"),
+  dinner = most_frequent_by_mealtype %>% filter(MEALTYPE == "저녁")
+)
+
+# 막대 그래프 생성(# 색상 추가 및 축 레이블 크기 조정 및 회전)
+ggplot(er_list, aes(x = reorder(음식명, 횟수), y = 횟수, fill = MEALTYPE)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "음식명별 추천받은 횟수", x = "음식명", y = "추천 횟수", fill = "MEALTYPE") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 20, size = 7)) +
+  scale_fill_manual(values = c("lightblue", "pink", "green")) +  # 색상 추가
+  geom_text(aes(label = 횟수), vjust = -0.3)  # 막대 위에 추천 횟수 레이블 추가
+
+```
+</div>
+**`r params$userid`**님은 <br>
+<ul>
+  <li>아침 : `r most_recommendations$morning$음식명`</li>
+  <li>점심 : `r most_recommendations$lunch$음식명`</li>
+  <li>저녁 : `r most_recommendations$dinner$음식명`</li>
+</ui>
+  
+을 가장 많이 추천을 받으셨으며, 자사에 식사별로 가장 많은 섭취 인증하신 음식은 아래와 같습니다.
+  
+```{r actual, echo=FALSE}
+
+actual_q <- paste0("select ae_diettype, ae_foodname 음식명,count(*) as 횟수 from actuality_eating where id = '", params$userid, "' AND EXTRACT(MONTH FROM AE_DATE) = EXTRACT(MONTH FROM SYSDATE) group by(ae_foodname, ae_diettype) order by 횟수 desc")
+actual <- dbGetQuery(con, actual_q)
+
+most_frequent_by_ae_diettype <- actual %>%
+  group_by(AE_DIETTYPE) %>%
+  top_n(1, 횟수) %>%
+  ungroup()
+
+most_ae_diettype <- list(
+  morning = most_frequent_by_ae_diettype %>% filter(AE_DIETTYPE == "아침"),
+  lunch = most_frequent_by_ae_diettype %>% filter(AE_DIETTYPE == "점심"),
+  dinner = most_frequent_by_ae_diettype %>% filter(AE_DIETTYPE == "저녁")
+)
+```
+<ul>
+  <li>아침 : `r most_ae_diettype$morning$음식명`</li>
+  <li>점심 : `r most_ae_diettype$lunch$음식명`</li>
+  <li>저녁 : `r most_ae_diettype$dinner$음식명`</li>
+</ui>
+<br>
+<div style="text-align:center;">
+```{r actual_nutri, echo=FALSE, error=FALSE, warning=FALSE}
+# 개별 사용자의 한끼 식사 평균 영양 정보를 가져오는 쿼리
+actual_nutri <- paste0("
+	SELECT 
+       AVG(fl.calory) AS total_calory,
+       AVG(fl.carbohydrate) AS 탄수화물,
+       AVG(fl.protein) AS 단백질,
+       AVG(fl.fat) AS 지방,
+       AVG(fl.sodium)/1000 AS 나트륨,
+       AVG(fl.cholesterol)/1000 AS 콜레스테롤
+	FROM actuality_eating ae
+	JOIN foodlist fl ON INSTR(',' || ae.ae_foodname || ',', ',' || fl.foodname || ',') > 0
+	WHERE ae.id = '", params$userid,"' AND TO_CHAR(ae.ae_date, 'YYYY-MM') = TO_CHAR(SYSDATE, 'YYYY-MM')")
+
+# 개별 사용자의 영양 정보를 데이터프레임으로 가져오기
+nutri <- dbGetQuery(con, actual_nutri)
+
+# 데이터 프레임에서 calory를 제외한 나머지 열 선택
+nutri_without_calory <- nutri[, -1]
+
+# # 경고 숨기기
+# suppressWarnings({
+#   # 열을 행으로 변환
+#   nutri_melted <- melt(nutri_without_calory)
+# })
+
+# 데이터 프레임에서 calory를 제외한 나머지 열 선택 및 pivot_longer를 사용해 긴 형식으로 변환
+nutri_melted <- nutri_without_calory %>%
+  pivot_longer(cols = everything(), names_to = "Nutrient", values_to = "Value")
+
+# 열 이름 변경
+names(nutri_melted) <- c("Nutrient", "Value")
+
+# Nutrient 값을 factor로 변환하여 순서 지정
+nutri_melted$Nutrient <- factor(nutri_melted$Nutrient, levels = c("탄수화물", "단백질", "지방", "나트륨", "콜레스테롤"))
+
+## 데이터 정규화 (0과 1 사이로 스케일 조정)
+nutri_melted$Value <- (nutri_melted$Value - min(nutri_melted$Value)) / (max(nutri_melted$Value) - min(nutri_melted$Value))
+
+# 전체 사용자의 한끼 식사 평균 영양 정보를 가져오는 쿼리
+avg_nutri_query <- "
+SELECT 
+    AVG(fl.calory) AS avg_calory,
+    AVG(fl.carbohydrate) AS 탄수화물,
+    AVG(fl.protein) AS 단백질,
+    AVG(fl.fat) AS 지방,
+    AVG(fl.sodium)/1000 AS 나트륨,
+    AVG(fl.cholesterol)/1000 AS 콜레스테롤
+FROM actuality_eating ae
+JOIN foodlist fl ON INSTR(',' || ae.ae_foodname || ',', ',' || fl.foodname || ',') > 0
+WHERE TO_CHAR(ae.ae_date, 'YYYY-MM') = TO_CHAR(SYSDATE, 'YYYY-MM')
+"
+
+# 전체 사용자의 평균 영양 정보를 가져오기
+avg_nutri <- dbGetQuery(con, avg_nutri_query)
+
+# 데이터 프레임에서 calory를 제외한 나머지 열 선택
+avg_nutri <- avg_nutri[, -1]
+
+# # 평균값을 melt하여 데이터프레임으로 변환
+# avg_nutri_melted <- melt(avg_nutri)
+
+# avg_nutri 데이터프레임에 대해서도 동일하게 적용
+avg_nutri_melted <- avg_nutri %>%
+  pivot_longer(cols = everything(), names_to = "Nutrient", values_to = "Value")
+
+# 열 이름 변경
+names(avg_nutri_melted) <- c("Nutrient", "Value")
+
+# Nutrient 값을 factor로 변환하여 순서 지정
+avg_nutri_melted$Nutrient <- factor(avg_nutri_melted$Nutrient, levels = c("탄수화물", "단백질", "지방", "나트륨", "콜레스테롤"))
+
+## 데이터 정규화 (0과 1 사이로 스케일 조정)
+avg_nutri_melted$Value <- (avg_nutri_melted$Value - min(avg_nutri_melted$Value)) / (max(avg_nutri_melted$Value) - min(avg_nutri_melted$Value))
+
+# 개별 사용자와 전체 사용자의 정보를 나타내는 그룹 설정
+nutri_melted$Group <- paste(params$userid, "님 한끼 평균")
+avg_nutri_melted$Group <- "전체 사용자 한끼 평균"
+
+# 폴라 차트 그리기
+p <- ggplot() +
+  geom_polygon(data = nutri_melted, aes(x = Nutrient, y = Value, group = Group, fill = Group), color = "blue", linewidth = 1, alpha = 0.5) +
+  geom_path(data = nutri_melted, aes(x = Nutrient, y = Value, group = Group, color = Group), linewidth = 1) +
+  geom_point(data = nutri_melted, aes(x = Nutrient, y = Value, group = Group, color = Group), size = 3, fill = "black", shape = 21) +  # 꼭지점에 점 추가
+  geom_polygon(data = avg_nutri_melted, aes(x = Nutrient, y = Value, group = Group, fill = Group), color = "red", linewidth = 1, alpha = 0.5) +
+  geom_path(data = avg_nutri_melted, aes(x = Nutrient, y = Value, group = Group, color = Group), linewidth = 1) +
+  geom_point(data = avg_nutri_melted, aes(x = Nutrient, y = Value, group = Group, color = Group), size = 3, fill = "black", shape = 21) +  # 꼭지점에 점 추가
+  coord_polar() +
+  theme_minimal() +
+  labs(title = paste0(params$userid,"님 한끼 식사 기준 평균 영양소 분포"),
+       x = "영양소",
+       y = "정규화된 값",
+       fill = "그룹") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "right")
+# 그래프 출력
+print(p)
+
+# 각 영양소와 전체 사용자의 평균을 비교하여 설명을 변수에 저장
+nutrient_comparison <- list()
+
+for (nutrient in unique(nutri_melted$Nutrient)) {
+  user_value <- nutri_melted$Value[nutri_melted$Nutrient == nutrient]
+  avg_value <- avg_nutri_melted$Value[avg_nutri_melted$Nutrient == nutrient]
+  
+  if (user_value < avg_value) {
+    nutrient_comparison[[nutrient]] <- paste(nutrient, "섭취량이 비교적 낮은 편입니다.")
+  } else {
+    nutrient_comparison[[nutrient]] <- paste(nutrient, "섭취량이 비교적 높은 편입니다.")
+  }
+}
+```
+</div>
+
+##### **`r params$userid`**님은 전체 사용자의 한끼 평균 식사보다
+  <ul>
+    <li>`r nutrient_comparison$탄수화물`</li>
+    <li>`r nutrient_comparison$단백질`</li>
+    <li>`r nutrient_comparison$지방`</li>
+    <li>`r nutrient_comparison$나트륨`</li>
+    <li>`r nutrient_comparison$콜레스테롤`</li>
+  </ul>
+
+
+---
+
+
+#### 2. 추천을 많이 요청한 운동 부위
+<div style="text-align:center;">
+```{r exercise_list, echo=FALSE}
+exercise_list_q <- paste0("select e_type, e_name 운동명, count(*) as 횟수 from (select er.*, e.e_type from exercise_record er join exercies e ON er.e_name = e.e_name) where id = '", params$userid, "' AND EXTRACT(MONTH FROM er_date) = EXTRACT(MONTH FROM SYSDATE) group by(e_type, e_name) order by 횟수 desc")
+
+exercise_list <- dbGetQuery(con, exercise_list_q)
+
+# e_type 내에서 운동별 횟수에 대한 막대 그래프 생성
+# exercise_plot <- ggplot(exercise_list, aes(x = reorder(E_TYPE, 횟수), y = 횟수, fill = 운동명)) +
+#   geom_bar(stat = "identity") +
+#   labs(title = "운동별 횟수", x = "운동 유형", y = "횟수", fill = "운동명") +
+#   theme_light() +
+#   scale_fill_brewer(palette = "Pastel1") +
+#   theme(axis.text.x = element_text(angle = 45, hjust = 1),)
+# 
+# print(exercise_plot)
+
+# # 데이터에 따라 그래디언트 색상 적용을 위한 준비
+exercise_list$E_TYPE <- factor(exercise_list$E_TYPE)
+# 그래프 생성
+exercise_plot <- ggplot(exercise_list, aes(x = reorder(E_TYPE, -횟수), y = 횟수, fill = 운동명)) +
+  geom_bar(stat = "identity", show.legend = TRUE) +
+  scale_fill_viridis_d(begin = 0.3, end = 0.9, direction = 1, option = "C") + # 그래디언트 색상 적용
+  labs(title = "월별 운동별 실시 횟수", x = "운동 유형", y = "실시 횟수", fill = "운동명") +
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 10),
+        plot.title = element_text(hjust = 0.5, face = "bold", size = 16))
+
+# 그래프 출력
+print(exercise_plot)
+
+```
+</div>
+---
+
+#### 3. `r params$userid`님 HealthyReal 이행률 
+
+```{r imple, echo=FALSE}
+imple_q <- paste0("SELECT * FROM CHALLENGE_RECORD WHERE ID = '", params$userid, "' AND EXTRACT(MONTH FROM RECORD_DATE) = EXTRACT(MONTH FROM SYSDATE) ORDER BY RECORD_DATE")
+imple <- dbGetQuery(con, imple_q)
+
+# EXERCISE 및 EATING 열에서 항목의 개수를 세는 함수 정의
+count_values <- function(column) {
+  # 컬럼을 문자열 형태로 변환
+  column <- as.character(column)
+  
+  # 공백 및 대괄호 제거
+  column <- gsub("\\[|\\]|\\s", "", column)
+  
+  # 컬럼을 쉼표를 기준으로 분리
+  items <- unlist(strsplit(column, ","))
+  
+  # 항목의 개수 반환
+  return(length(items))
+}
+
+# EXERCISE 및 EATING 열에서 항목의 개수 세기
+imple$EXERCISE <- sapply(imple$EXERCISE, count_values)
+imple$EATING <- sapply(imple$EATING, count_values)
+
+# 현재 1달 중 몇일인지
+current_day <- as.numeric(format(Sys.Date(), "%d"))
+count <- nrow(imple)
+
+# 이행률을 계산할 값으로 변경
+current_exercise_imple <- round((sum(imple$EXERCISE) / (count * 3)) * 100, 2)
+current_eating_imple <- round((sum(imple$EATING) / (count * 3)) *100, 2)
+
+avg_imple <- (current_exercise_imple + current_eating_imple)/2
+
 ```
 
-## Including Plots
-
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
+`r params$userid`님은 현재 `r current_day`일 중 `r count`일을 이행률 측정에 참여하셨으며, 그에 대한 달성 수치 및 그래프는 다음과 같습니다.
+<ul>
+  <li>운동은 `r current_exercise_imple`%를 달성</li>
+  <li>음식은 `r current_eating_imple`%를 달성</li>
+  <li>전체 달성 확률은 `r avg_imple`%</li>
+</ul>
+<div style="text-align:center;">
+```{r imple_chart, echo=FALSE}
+# layout 설정 (1행 3열)
+layout(matrix(1:3, 1, 3))
+# 운동 이행률에 해당하는 원형 차트 생성
+pie3D(c(current_exercise_imple, 100 - current_exercise_imple),
+      labels = c(paste(current_exercise_imple, "%"), ""),
+      col = c("skyblue", "gray"),
+      labelcex = 0.8)
+title("운동")
+# 음식 이행률에 해당하는 원형 차트 생성
+pie3D(c(current_eating_imple, 100 - current_eating_imple),
+      labels = c(paste(current_eating_imple, "%"), ""),
+      col = c("lightgreen", "gray"),
+      labelcex = 0.8)
+title("식단")
+# 평균 이행률에 해당하는 원형 차트 생성
+pie3D(c(avg_imple, 100 - avg_imple),
+      labels = c(paste(avg_imple, "%"), ""),
+      col = c("orange", "gray"),
+      labelcex = 0.8)
+ title("평균")
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+</div>
+
+---
+
+#### 4. `r params$userid`님 인바디 시계열 그래프
+<div style="text-align:center;">
+```{r inbody, echo=FALSE}
+
+# 데이터베이스에서 사용자의 inbody 정보 가져오기
+inbody_q <- paste0("SELECT INB_DATE, INB_WEIGHT, INB_SMM, INB_BFM, INB_BMI, INB_PBF FROM Inbody_Info WHERE ID = '", params$userid, "'")
+inbody <- dbGetQuery(con, inbody_q)
+
+# 날짜 변수를 시계열 형식으로 변환
+inbody$INB_DATE <- as.Date(inbody$INB_DATE)
+
+# 각 수치에 대한 시계열 그래프 생성
+weight_plot <- ggplot(inbody, aes(x = INB_DATE, y = INB_WEIGHT)) +
+  geom_line() +
+  labs(title = "체중 시계열 그래프", x = "날짜", y = "체중")
+
+smm_plot <- ggplot(inbody, aes(x = INB_DATE, y = INB_SMM)) +
+  geom_line() +
+  labs(title = "근육량 시계열 그래프", x = "날짜", y = "근육량")
+
+bfm_plot <- ggplot(inbody, aes(x = INB_DATE, y = INB_BFM)) +
+  geom_line() +
+  labs(title = "체지방량 시계열 그래프", x = "날짜", y = "체지방량")
+
+bmi_plot <- ggplot(inbody, aes(x = INB_DATE, y = INB_BMI)) +
+  geom_line() +
+  labs(title = "BMI 시계열 그래프", x = "날짜", y = "BMI")
+
+pbf_plot <- ggplot(inbody, aes(x = INB_DATE, y = INB_PBF)) +
+  geom_line() +
+  labs(title = "체지방률 시계열 그래프", x = "날짜", y = "체지방률")
+
+# 그래프를 합치고 꾸며주기
+combined_plots <- weight_plot + smm_plot +
+  plot_layout(ncol = 1, heights = c(40, 40))  # 그래프의 레이아웃 지정
+
+# 그래프를 합치고 꾸며주기
+combined_plots2 <- bfm_plot + bmi_plot + pbf_plot +
+  plot_layout(ncol = 1, heights = c(40, 40, 40))  # 그래프의 레이아웃 지정
+# 그래프 출력
+print(combined_plots)
+print(combined_plots2)
+```
+</div>
+
+---
+
+#### 5. `r params$userid`님 `r format(as.Date(format(Sys.Date(), "%Y-%m-01")) , "%Y년 %m월")` 종합 감정
+
+```{r stress, echo=FALSE}
+stress_q <- paste0("SELECT avg(stress) FROM diary WHERE ID = '", params$userid, "' AND EXTRACT(MONTH FROM diary_postdate) = EXTRACT(MONTH FROM SYSDATE)")
+stress <- dbGetQuery(con, stress_q)
+
+if(stress < 0){
+  stress_r <-paste0(format(as.Date(format(Sys.Date(), "%Y-%m-01")), " 평소보다 유독 힘든 한달을 보내고 계시는군요. 근심, 걱정 잠시 내려놓고 재충전의 시간을 가져보시는건 어떠실까요?"))
+}else if(stress == 0){
+  stress_r <-paste0(format(as.Date(format(Sys.Date(), "%Y-%m-01")), " 평소와 같은 나날을 보내고 있는 당신, 하루하루 반복되는 일상일지 몰라도 늘 항상 잘하고 있어요.<br> 저희 HealthyReal이 항상 응원합니다. "))
+}else if(stress > 0){
+  stress_r <-paste0(format(as.Date(format(Sys.Date(), "%Y-%m-01")), "요즘 평소보다 좋은 일들이 많은 것 같네요! <br> 그거 아시나요? 앞으로는 지금보다 더 좋은 일들이 더 많으실꺼예요!"))
+}
+```
+<br>
+<div style="text-align:center;">
+##### **`r params$userid`님 `r format(as.Date(format(Sys.Date(), "%Y-%m-01")) , "%Y년 %m월")` 행복 지수 : `r (stress + 1) * 50 `**
+  <br>
+  <div style="margin-bottom : 20px;font-size:20px;color:brown;">
+  `r stress_r`
+  </div>
+</div>
+</body>
+
